@@ -171,3 +171,27 @@ def test_missing_phrase_is_usage_error(capsys):
     with pytest.raises(SystemExit) as exc:
         main([], environ={})
     assert exc.value.code == 2
+
+
+class _ClosedPipe(io.StringIO):
+    def write(self, s):
+        raise BrokenPipeError(32, "Broken pipe")
+
+
+def test_broken_pipe_is_handled(tree):
+    err = io.StringIO()
+    code = main(["portfolio", "-l"], environ={}, stdout=_ClosedPipe(), stderr=err)
+    assert code == 141
+    assert "Traceback" not in err.getvalue()
+
+
+def test_keyboard_interrupt_is_handled(tree, monkeypatch):
+    import findme.cli as cli
+
+    def boom(*a, **kw):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(cli, "search", boom)
+    code, _, err = run("portfolio")
+    assert code == 130
+    assert "interrupted" in err

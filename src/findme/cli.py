@@ -82,6 +82,9 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
+EXIT_BROKEN_PIPE = 141  # 128 + SIGPIPE, what shells report for `findme ... | head`
+
+
 def main(
     argv: Sequence[str] | None = None,
     *,
@@ -92,7 +95,29 @@ def main(
     environ = os.environ if environ is None else environ
     stdout = stdout or sys.stdout
     stderr = stderr or sys.stderr
+    try:
+        return _run(argv, environ, stdout, stderr)
+    except KeyboardInterrupt:
+        print("findme: interrupted", file=stderr)
+        return 130
+    except BrokenPipeError:
+        # The reader went away (e.g. `| head`). Silence further writes to the
+        # real stdout so Python doesn't complain while flushing at exit.
+        if stdout is sys.stdout:
+            try:
+                devnull = os.open(os.devnull, os.O_WRONLY)
+                os.dup2(devnull, sys.stdout.fileno())
+            except (OSError, ValueError):  # pragma: no cover - best effort
+                pass
+        return EXIT_BROKEN_PIPE
 
+
+def _run(
+    argv: Sequence[str] | None,
+    environ: Mapping[str, str],
+    stdout: TextIO,
+    stderr: TextIO,
+) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
 
@@ -133,17 +158,13 @@ def main(
         print(format_hit(hit, mode), file=stdout, flush=True)
 
     paths = iter_files(roots, excludes=excludes, extensions=extensions, follow_symlinks=follow, on_error=on_walk_error)
-    try:
-        report = search(
-            paths,
-            matcher,
-            lambda path: read_file(path, max_size=max_size),
-            keep_text=(mode == "full"),
-            on_hit=None if mode == "json" else on_hit,
-        )
-    except KeyboardInterrupt:
-        print("findme: interrupted", file=stderr)
-        return 130
+    report = search(
+        paths,
+        matcher,
+        lambda path: read_file(path, max_size=max_size),
+        keep_text=(mode == "full"),
+        on_hit=None if mode == "json" else on_hit,
+    )
 
     report.errors[:0] = [SearchError(p, m) for p, m in walk_errors]
 
